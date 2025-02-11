@@ -55,7 +55,7 @@ def send_request(sock, request_bytes):
     return status, payload.decode('utf-8', errors='replace')
 
 def main():
-    host = '192.168.0.108'  # Ensure this matches your server's IP
+    host = socket.gethostbyname(socket.gethostname())
     port = 6677
     try:
         with socket.create_connection((host, port)) as sock:

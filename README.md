@@ -47,3 +47,37 @@ This project requires Python 3.6 or later. No third-party packages are needed be
    ```bash
    git clone https://github.com/dhrubo326/imds.git
    cd imds
+   ```
+2. **(Optional) Create a Virtual Environment:**
+
+## Usage
+
+- **Running the Server:**  
+  To start the key-value server, run:
+  ```bash
+  python server.py
+  ```
+  By default, the server listens on your local IP and port 6677. Adjust these values in the code or via command-line arguments if needed.
+- **Running the Client:**  
+  A sample client is provided to interact with the server. To run the client in interactive mode, execute:
+  ```bash
+  python client.py
+  ```
+  The client will prompt you for commands. You can type commands like:
+  - set foo bar
+  - get foo
+  - del foo
+  - Type exit to quit the client.
+  
+## Protocol Details
+
+## Future Enhancements
+
+## Project Structure
+
+## Contributing
+Contributions are welcome! Please feel free to open issues or submit pull requests for enhancements or bug fixes.
+
+## License
+This project is licensed under the MIT License.
+

@@ -206,7 +206,7 @@ def accept_connection(server_sock, mask):
 
 # ----- Main  ----- #
 
-def start_server(host_ip='192.168.0.108', port=6677):
+def start_server(host_ip='192.168.0.108', port=6677): 
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server_sock.bind((host_ip, port))
@@ -233,4 +233,5 @@ def start_server(host_ip='192.168.0.108', port=6677):
         server_sock.close()
 
 if __name__ == '__main__':
-    start_server()
+    HOST = socket.gethostbyname(socket.gethostname())
+    start_server(HOST)
