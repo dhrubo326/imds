@@ -1,34 +1,65 @@
-"""An In-memory key–value server."""
+"""
+server.py – Main server code for the In-Memory Key-Value Store.
+
+This server implements a Redis-like protocol that supports point queries (GET, SET, DEL)
+as well as sorted set commands (ZADD, ZRANGE, ZRANK, ZREM). It uses non-blocking I/O
+with an event loop (via selectors) and a unified store that combines a hash table,
+sorted sets (via a skip list), and LRU cache.
+"""
 import socket
 import struct
 import selectors
 
+from store.unified_store import store
+from store.aof import AOF
+
 # Protocol and buffer constants
-MAX_MSG = 4096          # Maximum allowed payload size per string
-MAX_ARGS = 1024         # Maximum number of arguments in a request
+MAX_MSG = 4096          # Maximum allowed payload per string
+MAX_ARGS = 1024         # Maximum number of arguments per request
 
 sel = selectors.DefaultSelector()
 
-# In-memory key–value store (will be replaced it later)
-db = {}
-
 # Response status codes
-RES_OK = 0     # Operation succeeded
-RES_NX = 1     # Key not found
-RES_ERR = 2    # Error / unrecognized command
+RES_OK = 0
+RES_NX = 1
+RES_ERR = 2
+
+# AOF persistence object (global)
+aof = AOF('appendonly.aof')
 
 # ----- Application Command Handlers ----- #
 
 def set_value(key, value):
-    db[key] = value
+    store.set(key, value)
+    aof.append(f"SET {key} {value}")
     return 'OK'
 
 def get_value(key):
-    return db.get(key, "(nil)")
+    value = store.get(key)
+    return '(nil)' if value is None else value
 
 def delete_key(key):
-    if key in db:
-        del db[key]
+    if store.get(key) is not None:
+        store.delete(key)
+        aof.append(f"DEL {key}")
+        return 'OK'
+    return '(nil)'
+
+def set_zadd(key, score, member):
+    store.process_zadd(key, score, member)
+    aof.append(f"ZADD {key} {score} {member}")
+    return 'OK'
+
+def get_zrange(key, start, end):
+    return store.process_zrange(key, start, end)
+
+def get_zrank(key, member):
+    value = store.process_zrank(key, member)
+    return '(nil)' if value is None else str(value)
+
+def delete_zrem(key, member):
+    if store.process_zrem(key, member) is not None:
+        aof.append(f"ZREM {key} {member}")
         return 'OK'
     return '(nil)'
 
@@ -39,6 +70,10 @@ def process_kv_command(args):
       - get key
       - set key value
       - del key
+      - zadd key score member
+      - zrange key start end
+      - zrank key member
+      - zrem key member
     Returns a tuple (status, response_string).
     """
     if not args:
@@ -48,9 +83,7 @@ def process_kv_command(args):
         if len(args) != 2:
             return (RES_ERR, "ERR wrong number of arguments")
         val = get_value(args[1])
-        if val == "(nil)":
-            return (RES_NX, "")
-        return (RES_OK, val)
+        return (RES_NX, "") if val == "(nil)" else (RES_OK, val)
     elif cmd == 'set':
         if len(args) != 3:
             return (RES_ERR, "ERR wrong number of arguments")
@@ -59,8 +92,31 @@ def process_kv_command(args):
     elif cmd == 'del':
         if len(args) != 2:
             return (RES_ERR, "ERR wrong number of arguments")
-        delete_key(args[1])
+        val = delete_key(args[1])
+        return (RES_NX, "") if val == "(nil)" else (RES_OK, "OK")
+    elif cmd == 'zadd':
+        if len(args) != 4:
+            return (RES_ERR, "ERR wrong number of arguments")
+        set_zadd(args[1], args[2], args[3])
         return (RES_OK, "OK")
+    elif cmd == 'zrange':
+        if len(args) != 4:
+            return (RES_ERR, "ERR wrong number of arguments")
+        results = get_zrange(args[1], args[2], args[3])
+        if not results:
+            return (RES_NX, "")
+        formatted_results = [f"{score}:{member}" for score, member in results]
+        return (RES_OK, ",".join(formatted_results))
+    elif cmd == 'zrank':
+        if len(args) != 3:
+            return (RES_ERR, "ERR wrong number of arguments")
+        val = get_zrank(args[1], args[2])
+        return (RES_NX, "") if val == "(nil)" else (RES_OK, val)
+    elif cmd == 'zrem':
+        if len(args) != 3:
+            return (RES_ERR, "ERR wrong number of arguments")
+        val = delete_zrem(args[1], args[2])
+        return (RES_NX, "") if val == "(nil)" else (RES_OK, "OK")
     else:
         return (RES_ERR, "ERR unknown command")
 
@@ -68,13 +124,13 @@ def process_kv_command(args):
 
 def parse_kv_request(buf):
     """
-    Attempt to parse a KV request from the beginning of buf.
+    Parse a KV request from the beginning of buf.
     Format:
       [4 bytes] nstr (number of strings, big-endian unsigned int)
       For each string:
-         [4 bytes] length of the string (big-endian unsigned int)
-         [N bytes] the string (UTF-8 encoded)
-    Returns (args, bytes_consumed) if a complete request is available, or (None, 0) otherwise.
+         [4 bytes] length (big-endian unsigned int)
+         [N bytes] UTF-8 encoded string.
+    Returns (args, bytes_consumed) if a complete request is available, else (None, 0).
     """
     if len(buf) < 4:
         return None, 0
@@ -107,13 +163,9 @@ class Connection:
     Represents a client connection.
     
     Maintains per-connection buffers:
-      - recv_buffer: a bytearray to accumulate incoming data.
-      - send_buffer: a bytearray for outgoing response data.
-    
-    Implements the KV protocol:
-      Request: a list of strings (each preceded by its 4-byte length) with a 4-byte count.
-      Response: an outer 4-byte header (total response length) followed by an inner response:
-                4 bytes for a status code plus a UTF-8 encoded payload.
+      - recv_buffer: accumulates incoming request data.
+      - send_buffer: accumulates outgoing response data.
+    Implements the KV protocol.
     """
     def __init__(self, sock, addr):
         self.sock = sock
@@ -126,7 +178,7 @@ class Connection:
         try:
             data = self.sock.recv(MAX_MSG)
         except BlockingIOError:
-            return True  # No data available now.
+            return True  # No data available right now.
         except Exception as e:
             print(f"Error reading from {self.addr}: {e}")
             return False
@@ -136,10 +188,8 @@ class Connection:
             while True:
                 parsed, consumed = parse_kv_request(self.recv_buffer)
                 if parsed is None:
-                    break  # Incomplete request; wait for more data.
-                # Remove processed data.
+                    break
                 del self.recv_buffer[:consumed]
-                # Process the command.
                 status, resp_str = process_kv_command(parsed)
                 resp_bytes = resp_str.encode('utf-8')
                 inner_resp = struct.pack('!I', status) + resp_bytes
@@ -147,25 +197,24 @@ class Connection:
                 full_response = outer_header + inner_resp
                 self.send_buffer.extend(full_response)
         else:
-            # recv() returned empty data; connection closed by client.
-            return False
+            return False  # Connection closed by client.
         return True
 
     def process_write(self):
-        """Write as much of the send_buffer as possible to the socket."""
+        """Write pending response data to the socket."""
         if self.send_buffer:
             try:
                 sent = self.sock.send(self.send_buffer)
                 del self.send_buffer[:sent]
             except BlockingIOError:
-                return True  # Try again later.
+                return True
             except Exception as e:
                 print(f"Error writing to {self.addr}: {e}")
                 return False
         return True
 
     def process_events(self, mask):
-        """Process read/write events based on the mask."""
+        """Process read and write events based on the event mask."""
         if mask & selectors.EVENT_READ:
             if not self.process_read():
                 return False
@@ -177,36 +226,31 @@ class Connection:
 # ----- Event Loop Callbacks ----- #
 
 def service_connection(conn, mask):
-    """
-    Callback for a client connection.
-    Processes events and then updates the selector registration based on whether
-    there's pending data to send.
-    """
+    """Callback for processing events on a client connection."""
     if not conn.process_events(mask):
         print(f"Closing connection to {conn.addr}")
         sel.unregister(conn.sock)
         conn.sock.close()
     else:
-        # If there is pending data, register for write events.
         events = selectors.EVENT_READ
         if conn.send_buffer:
             events |= selectors.EVENT_WRITE
         sel.modify(conn.sock, events, data=conn)
 
 def accept_connection(server_sock, mask):
-    """Accept a new connection and register it for Readiness API."""
+    """Accept a new client connection and register it."""
     try:
         client_sock, client_addr = server_sock.accept()
         print(f"Accepted connection from {client_addr}")
         client_sock.setblocking(False)
         conn = Connection(client_sock, client_addr)
-        sel.register(client_sock, selectors.EVENT_READ, data=conn) 
+        sel.register(client_sock, selectors.EVENT_READ, data=conn)
     except Exception as e:
         print("Error accepting connection:", e)
 
-# ----- Main  ----- #
+# ----- Main Event Loop ----- #
 
-def start_server(host_ip='192.168.0.108', port=6677): 
+def start_server(host_ip='192.168.0.108', port=6677):
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server_sock.bind((host_ip, port))
@@ -214,13 +258,12 @@ def start_server(host_ip='192.168.0.108', port=6677):
     print(f"Server started on {host_ip}:{port}")
     server_sock.setblocking(False)
     sel.register(server_sock, selectors.EVENT_READ, data=None)
-    #Event Loop
+
     try:
         while True:
-            events = sel.select(timeout = 1)
+            events = sel.select(timeout=1)
             if not events:
-                    # We will handle background jobs later
-                    continue
+                continue
             for key, mask in events:
                 if key.data is None:
                     accept_connection(key.fileobj, mask)
