@@ -1,7 +1,7 @@
 #imds
 # In-Memory Key-Value Store (Redis-like) in Python
 
-This project is an educational, production-oriented in-memory key-value store implemented in Python. It mimics a subset of Redis functionality by supporting point queries (GET, SET, DEL) over a custom binary protocol. The server uses non-blocking I/O with an event loop (via Python’s `selectors` module) and per-connection buffering to handle multiple simultaneous client connections and pipelined requests efficiently.
+This project is an educational, production-oriented in-memory key-value store implemented in Python. It mimics a subset of Redis functionality by supporting point queries, range queries and rank queires over a custom binary protocol. The server uses non-blocking I/O with an event loop (via Python’s `selectors` module) and per-connection buffering to handle multiple simultaneous client connections and pipelined requests efficiently.
 
 ## Table of Contents
 
