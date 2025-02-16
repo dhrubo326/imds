@@ -97,12 +97,24 @@ def process_kv_command(args):
     elif cmd == 'zadd':
         if len(args) != 4:
             return (RES_ERR, "ERR wrong number of arguments")
-        set_zadd(args[1], args[2], args[3])
+        set_name, score, member = args[1], args[2], args[3]
+        # Ensure the score is converted to a float (or int if necessary)
+        try:
+            score = float(score)  # Convert string to number
+        except ValueError:
+            return (RES_ERR, "ERR score must be a number")
+        set_zadd(set_name, score, member)
         return (RES_OK, "OK")
     elif cmd == 'zrange':
         if len(args) != 4:
             return (RES_ERR, "ERR wrong number of arguments")
-        results = get_zrange(args[1], args[2], args[3])
+        set_name, start_score, end_score = args[1], args[2], args[3]
+        try:
+            start_score = float(start_score)  # Convert string to number
+            end_score = float(end_score)  # Convert string to number
+        except ValueError:
+            return (RES_ERR, "ERR score must be a number")
+        results = get_zrange(set_name, start_score, end_score)
         if not results:
             return (RES_NX, "")
         formatted_results = [f"{score}:{member}" for score, member in results]
