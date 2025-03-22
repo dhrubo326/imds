@@ -69,4 +69,4 @@ class UnifiedStore:
         return None
 
 # Create global instances (you can import these in server.py)
-store = UnifiedStore(capacity=1000)
+store = UnifiedStore(capacity=100000)
